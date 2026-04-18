@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# ChromaDB vector store
+chroma_data/
+chroma/
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MyPy / type checkers
+.mypy_cache/
+.dmypy.json
+.pyright/
+
+# Ruff / linters
+.ruff_cache/
+
+# Docker
+*.env.docker
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
+frontend/.turbo/
+
+# Superpowers plans & specs (internal dev docs)
+docs/superpowers/

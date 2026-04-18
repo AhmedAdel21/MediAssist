@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from logging_config import setup_logging, get_logger; setup_logging\\(\\); logger = get_logger\\('test'\\); logger.info\\('Logging works'\\); logger.debug\\('Debug works'\\); logger.warning\\('Warning works'\\)\")",
+      "Bash(python -c \"from logging_middleware import LoggingMiddleware; print\\('Middleware OK'\\)\")",
+      "Bash(python -m pip show fastapi)",
+      "Bash(where python *)",
+      "Read(//k/pythons-dola/mediassist/**)",
+      "Bash(K:/pythons-dola/mediassist/.venv/Scripts/python.exe -c \"from logging_config import setup_logging, get_logger; setup_logging\\(\\); logger = get_logger\\('test'\\); logger.info\\('Logger OK'\\)\")",
+      "Bash(K:/pythons-dola/mediassist/.venv/Scripts/python.exe -c \"from logging_middleware import LoggingMiddleware; print\\('Middleware OK'\\)\")",
+      "Bash(K:/pythons-dola/mediassist/.venv/Scripts/python.exe -m pip show fastapi)",
+      "Bash(K:/pythons-dola/mediassist/.venv/Scripts/python.exe -m pip list)"
+    ]
+  }
+}
