@@ -1,8 +1,10 @@
-import json
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from anthropic import AsyncAnthropic
+import google.generativeai as genai
+import google.generativeai.protos as protos
+from fastapi import HTTPException, status
+from google.api_core.exceptions import ResourceExhausted
 
 from config import settings
 from logging_config import get_logger
@@ -10,52 +12,56 @@ from rag.service import RAGService
 
 logger = get_logger(__name__)
 
-TOOL_DEFINITIONS = [
-    {
-        "name": "rag_search",
-        "description": "Search indexed medical documents for relevant information about a query.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query"},
-                "n_results": {"type": "integer", "description": "Number of results to return", "default": 5},
+GEMINI_MODEL = "gemini-2.5-flash"
+
+TOOL_DECLARATIONS = [
+    protos.FunctionDeclaration(
+        name="rag_search",
+        description="Search indexed medical documents for relevant information about a query.",
+        parameters=protos.Schema(
+            type=protos.Type.OBJECT,
+            properties={
+                "query": protos.Schema(type=protos.Type.STRING, description="The search query"),
+                "n_results": protos.Schema(type=protos.Type.INTEGER, description="Number of results to return"),
             },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "calculate_dose",
-        "description": "Calculate medication dose based on patient weight and protocol.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "medication": {"type": "string"},
-                "weight_kg": {"type": "number"},
-                "dose_mg_per_kg": {"type": "number"},
-                "age_years": {"type": "number"},
+            required=["query"],
+        ),
+    ),
+    protos.FunctionDeclaration(
+        name="calculate_dose",
+        description="Calculate medication dose based on patient weight and protocol.",
+        parameters=protos.Schema(
+            type=protos.Type.OBJECT,
+            properties={
+                "medication": protos.Schema(type=protos.Type.STRING),
+                "weight_kg": protos.Schema(type=protos.Type.NUMBER),
+                "dose_mg_per_kg": protos.Schema(type=protos.Type.NUMBER),
+                "age_years": protos.Schema(type=protos.Type.NUMBER),
             },
-            "required": ["medication", "weight_kg", "dose_mg_per_kg"],
-        },
-    },
-    {
-        "name": "flag_urgent",
-        "description": "Flag a case as urgent, triggering immediate escalation.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string"},
-                "severity": {"type": "string", "enum": ["high", "critical"]},
+            required=["medication", "weight_kg", "dose_mg_per_kg"],
+        ),
+    ),
+    protos.FunctionDeclaration(
+        name="flag_urgent",
+        description="Flag a case as urgent, triggering immediate escalation.",
+        parameters=protos.Schema(
+            type=protos.Type.OBJECT,
+            properties={
+                "reason": protos.Schema(type=protos.Type.STRING),
+                "severity": protos.Schema(type=protos.Type.STRING, enum=["high", "critical"]),
             },
-            "required": ["reason", "severity"],
-        },
-    },
+            required=["reason", "severity"],
+        ),
+    ),
 ]
 
-SYSTEM_PROMPT = """You are MediAssist AI, a clinical decision support assistant.
-Answer questions strictly based on uploaded medical protocols and guidelines.
-Do not provide medical advice from general knowledge — always search documents first.
-When calculations are needed, use the calculate_dose tool.
-Flag urgent situations with the flag_urgent tool immediately."""
+SYSTEM_PROMPT = (
+    "You are MediAssist AI, a clinical decision support assistant. "
+    "Answer questions strictly based on uploaded medical protocols and guidelines. "
+    "Do not provide medical advice from general knowledge — always search documents first. "
+    "When calculations are needed, use the calculate_dose tool. "
+    "Flag urgent situations with the flag_urgent tool immediately."
+)
 
 
 class MedicalAgent:
@@ -63,19 +69,20 @@ class MedicalAgent:
 
     def __init__(self, rag_service: RAGService) -> None:
         self.rag = rag_service
-        self.anthropic = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        genai.configure(api_key=settings.gemini_api_key)
+        self.model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            tools=TOOL_DECLARATIONS,
+            system_instruction=SYSTEM_PROMPT,
+        )
 
     async def _execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         logger.debug("Tool call: name=%s input=%s", tool_name, tool_input)
+
         if tool_name == "rag_search":
-            chunks = await self.rag.query(
-                tool_input["query"],
-                tool_input.get("n_results", 5),
-            )
+            chunks = await self.rag.query(tool_input["query"], tool_input.get("n_results", 5))
             if not chunks:
-                logger.debug("Tool rag_search: no results for query=%r", tool_input["query"])
                 return "No relevant documents found."
-            logger.debug("Tool rag_search: found %d chunks for query=%r", len(chunks), tool_input["query"])
             parts = []
             for i, chunk in enumerate(chunks, 1):
                 parts.append(
@@ -93,131 +100,130 @@ class MedicalAgent:
             result = f"{med}: {total:.1f} mg (based on {weight} kg × {dose_per_kg} mg/kg)"
             if age is not None:
                 result += f" — patient age: {age} years"
-            logger.debug("Tool calculate_dose: %s", result)
             return result
 
         if tool_name == "flag_urgent":
-            logger.warning(
-                "Tool flag_urgent: severity=%s reason=%s",
-                tool_input["severity"], tool_input["reason"],
-            )
-            return (
-                f"⚠️ URGENT ({tool_input['severity'].upper()}) FLAG RAISED: {tool_input['reason']}"
-            )
+            logger.warning("flag_urgent: severity=%s reason=%s", tool_input["severity"], tool_input["reason"])
+            return f"⚠️ URGENT ({tool_input['severity'].upper()}) FLAG RAISED: {tool_input['reason']}"
 
-        logger.error("Tool call to unknown tool: %s", tool_name)
         return f"Unknown tool: {tool_name}"
+
+    def _build_history(self, conversation_history: list[dict[str, str]]) -> list[dict]:
+        # Gemini uses "model" for the assistant role, not "assistant"
+        result = []
+        for m in conversation_history:
+            role = "model" if m["role"] == "assistant" else "user"
+            result.append({"role": role, "parts": [m["content"]]})
+        return result
 
     async def stream(
         self,
         message: str,
         conversation_history: list[dict[str, str]],
     ) -> AsyncGenerator[str, None]:
-        messages = [*conversation_history, {"role": "user", "content": message}]
+        chat = self.model.start_chat(history=self._build_history(conversation_history))
+        current_input: Any = message
         iterations = 0
-        tools_called: list[str] = []
 
         while iterations < self.MAX_ITERATIONS:
             iterations += 1
             logger.debug("Agent stream iteration %d/%d", iterations, self.MAX_ITERATIONS)
+
             try:
-                response = await self.anthropic.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=4096,
-                    system=SYSTEM_PROMPT,
-                    tools=TOOL_DEFINITIONS,
-                    messages=messages,
+                response = await chat.send_message_async(current_input)
+            except ResourceExhausted as exc:
+                logger.warning("Gemini quota exceeded on iteration %d: %s", iterations, exc)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="AI quota exceeded. Please try again later.",
                 )
             except Exception as exc:
-                logger.error("Anthropic API error on iteration %d: %s", iterations, exc, exc_info=True)
+                logger.error("Gemini API error on iteration %d: %s", iterations, exc, exc_info=True)
                 raise
 
-            # Stream text content blocks
-            text_yielded = False
-            tool_calls: list[dict[str, Any]] = []
+            function_calls = [
+                p.function_call
+                for p in response.parts
+                if p.function_call.name  # non-empty name means it's a real tool call
+            ]
+            text_parts = [p.text for p in response.parts if hasattr(p, "text") and p.text]
 
-            for block in response.content:
-                if block.type == "text":
-                    # Yield text word by word for streaming effect
-                    for word in block.text.split(" "):
-                        yield word + " "
-                    text_yielded = True
-                elif block.type == "tool_use":
-                    tool_calls.append({"id": block.id, "name": block.name, "input": block.input})
-
-            if response.stop_reason == "end_turn" or not tool_calls:
-                logger.info(
-                    "Agent stream loop done: iterations=%d tools_called=%s stop_reason=%s",
-                    iterations, tools_called, response.stop_reason,
-                )
+            if not function_calls:
+                # Final answer — stream word by word
+                full_text = "".join(text_parts)
+                logger.info("Agent stream done: iterations=%d", iterations)
+                for word in full_text.split(" "):
+                    yield word + " "
                 break
 
-            # Process tool calls
-            tool_results = []
-            for tc in tool_calls:
-                tools_called.append(tc["name"])
-                yield f"[Using tool: {tc['name']}...]\n"
-                result = await self._execute_tool(tc["name"], tc["input"])
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tc["id"],
-                        "content": result,
-                    }
+            # Execute all tool calls, collect responses
+            fn_response_parts = []
+            for fc in function_calls:
+                tool_name = fc.name
+                tool_input = dict(fc.args)
+                yield f"[Using tool: {tool_name}...]\n"
+                result = await self._execute_tool(tool_name, tool_input)
+                fn_response_parts.append(
+                    protos.Part(
+                        function_response=protos.FunctionResponse(
+                            name=tool_name,
+                            response={"result": result},
+                        )
+                    )
                 )
 
-            # Add assistant turn + tool results to messages
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": tool_results})
+            current_input = fn_response_parts
 
     async def chat(
         self,
         message: str,
         conversation_history: list[dict[str, str]],
     ) -> dict[str, Any]:
-        messages = [*conversation_history, {"role": "user", "content": message}]
+        chat = self.model.start_chat(history=self._build_history(conversation_history))
+        current_input: Any = message
         iterations = 0
         full_response = ""
-        tools_called: list[str] = []
 
         while iterations < self.MAX_ITERATIONS:
             iterations += 1
             logger.debug("Agent chat iteration %d/%d", iterations, self.MAX_ITERATIONS)
+
             try:
-                response = await self.anthropic.messages.create(
-                    model="claude-opus-4-5",
-                    max_tokens=4096,
-                    system=SYSTEM_PROMPT,
-                    tools=TOOL_DEFINITIONS,
-                    messages=messages,
+                response = await chat.send_message_async(current_input)
+            except ResourceExhausted as exc:
+                logger.warning("Gemini quota exceeded on iteration %d: %s", iterations, exc)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="AI quota exceeded. Please try again later.",
                 )
             except Exception as exc:
-                logger.error("Anthropic API error on iteration %d: %s", iterations, exc, exc_info=True)
+                logger.error("Gemini API error on iteration %d: %s", iterations, exc, exc_info=True)
                 raise
 
-            tool_calls: list[dict[str, Any]] = []
-            for block in response.content:
-                if block.type == "text":
-                    full_response += block.text
-                elif block.type == "tool_use":
-                    tool_calls.append({"id": block.id, "name": block.name, "input": block.input})
+            function_calls = [
+                p.function_call
+                for p in response.parts
+                if p.function_call.name
+            ]
+            text_parts = [p.text for p in response.parts if hasattr(p, "text") and p.text]
 
-            if response.stop_reason == "end_turn" or not tool_calls:
-                logger.info(
-                    "Agent chat loop done: iterations=%d tools_called=%s stop_reason=%s",
-                    iterations, tools_called, response.stop_reason,
-                )
+            if not function_calls:
+                full_response = "".join(text_parts)
                 break
 
-            tool_results = []
-            for tc in tool_calls:
-                tools_called.append(tc["name"])
-                result = await self._execute_tool(tc["name"], tc["input"])
-                tool_results.append(
-                    {"type": "tool_result", "tool_use_id": tc["id"], "content": result}
+            fn_response_parts = []
+            for fc in function_calls:
+                result = await self._execute_tool(fc.name, dict(fc.args))
+                fn_response_parts.append(
+                    protos.Part(
+                        function_response=protos.FunctionResponse(
+                            name=fc.name,
+                            response={"result": result},
+                        )
+                    )
                 )
 
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": tool_results})
+            current_input = fn_response_parts
 
+        logger.info("Agent chat done: iterations=%d response_len=%d", iterations, len(full_response))
         return {"response": full_response, "iterations_used": iterations}

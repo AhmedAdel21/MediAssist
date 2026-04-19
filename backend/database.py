@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -6,7 +7,7 @@ from logging_config import get_logger
 
 logger = get_logger(__name__)
 
-engine = create_async_engine(settings.database_url, echo=settings.debug)
+engine = create_async_engine(settings.database_url, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
@@ -19,6 +20,8 @@ async def get_db():
         try:
             logger.debug("DB session opened")
             yield session
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.error("DB session error: %s", exc, exc_info=True)
             raise

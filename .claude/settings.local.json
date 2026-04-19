@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('K:/pythons-dola/mediassist/backend/agents/service.py', encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
     ]
   }
 }

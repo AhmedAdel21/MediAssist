@@ -1,5 +1,8 @@
+import io
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
 from pydantic import BaseModel
+# from pypdf import PdfReader
 
 from auth.models import User
 from authz.policies import require_doctor, require_medical_staff
@@ -23,18 +26,28 @@ async def upload_document(
 ):
     logger.info("Document upload started: filename=%s user_id=%s", file.filename, current_user.id)
     content = await file.read()
+    filename = file.filename or "unknown"
+
+    # if filename.lower().endswith(".pdf"):
+    #     try:
+    #         reader = PdfReader(io.BytesIO(content))
+    #         text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    #     except Exception as exc:
+    #         logger.warning("Document upload failed — PDF parse error: filename=%s error=%s", filename, exc)
+    #         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not parse PDF file")
+    # else:
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
-        logger.warning("Document upload failed — not UTF-8: filename=%s user_id=%s", file.filename, current_user.id)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be UTF-8 encoded text")
+        logger.warning("Document upload failed — not UTF-8: filename=%s user_id=%s", filename, current_user.id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a PDF or UTF-8 encoded text")
 
     if not text.strip():
-        logger.warning("Document upload failed — empty file: filename=%s user_id=%s", file.filename, current_user.id)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty")
+        logger.warning("Document upload failed — empty file: filename=%s user_id=%s", filename, current_user.id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File is empty or contains no extractable text")
 
     result = await rag.index_document(
-        filename=file.filename or "unknown",
+        filename=filename,
         content=text,
         uploader_id=current_user.id,
     )

@@ -36,7 +36,6 @@ class _JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
-        # Merge any extra fields attached to the record
         for key, val in record.__dict__.items():
             if key not in {
                 "name", "msg", "args", "levelname", "levelno", "pathname",
@@ -59,10 +58,12 @@ def setup_logging() -> None:
     if root.handlers:
         root.handlers.clear()
 
+    # Console: INFO and above only
     console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.DEBUG)
+    console.setLevel(logging.INFO)
     console.setFormatter(_PrettyFormatter())
 
+    # File: full DEBUG for troubleshooting
     file_handler = logging.FileHandler(logs_dir / "app.log", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(_JsonFormatter())
@@ -70,8 +71,17 @@ def setup_logging() -> None:
     root.addHandler(console)
     root.addHandler(file_handler)
 
-    # Quiet noisy third-party loggers
-    for noisy in ("uvicorn.access", "chromadb", "httpx", "httpcore"):
+    # Silence noisy third-party loggers on console
+    for noisy in (
+        "uvicorn.access",
+        "chromadb",
+        "httpx",
+        "httpcore",
+        "sqlalchemy.engine",
+        "sqlalchemy.pool",
+        "aiosqlite",
+        "passlib",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

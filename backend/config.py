@@ -6,6 +6,7 @@ class Settings(BaseSettings):
 
     secret_key: str = "dev-secret-key-change-in-production-32ch"
     anthropic_api_key: str = ""
+    gemini_api_key: str = ""
     database_url: str = "sqlite+aiosqlite:///./mediassist.db"
     chroma_persist_directory: str = "./chroma_db"
     access_token_expire_minutes: int = 60
